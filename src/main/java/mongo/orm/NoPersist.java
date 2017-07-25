@@ -10,6 +10,6 @@ import java.lang.annotation.Target;
  * @since 07.07.2017
  */
 @Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.METHOD)
+@Target(ElementType.FIELD)
 public @interface NoPersist {
 }

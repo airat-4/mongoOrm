@@ -6,6 +6,7 @@ import mongo.orm.NoPersist;
 
 public class User extends DTO {
     private String name;
+    @NoPersist
     private String password;
     private String hash;
 
@@ -17,7 +18,6 @@ public class User extends DTO {
         this.name = name;
     }
 
-    @NoPersist
     public String getPassword() {
         return password;
     }

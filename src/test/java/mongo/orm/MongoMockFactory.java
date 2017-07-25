@@ -48,6 +48,15 @@ public class MongoMockFactory {
                 when(mock.iterator()).thenReturn(dbObjects.iterator());
                 return mock;
             }));
+
+            when(dbCollection.remove(any(DBObject.class))).thenAnswer((invocation -> {
+                String name = ((DBCollection) invocation.getMock()).getName();
+                List<DBObject> dbObjects = MOCK_MONGO.find(name, invocation.getArgumentAt(0, DBObject.class));
+                if(!dbObjects.isEmpty()){
+                    MOCK_MONGO.remove(name, dbObjects.get(0));
+                }
+                return null;
+            }));
             return dbCollection;
         });
     }
@@ -91,9 +100,8 @@ class MockMongo {
         getCollection(collectionName).add(newObject);
     }
 
-    private void remove(String collectionName, DBObject object) {
+     void remove(String collectionName, DBObject object) {
         getCollection(collectionName).remove(object);
-
     }
 
     List<DBObject> find(String collectionName, DBObject query) {

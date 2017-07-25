@@ -32,6 +32,7 @@ public class EntityManagerTest {
         Assert.assertEquals("qwe_745", entityManager.toDBFormatString("qwe745"));
         Assert.assertEquals("745_qwe", entityManager.toDBFormatString("745qwe"));
         Assert.assertEquals("_id", entityManager.toDBFormatString("ID"));
+        Assert.assertEquals("_id", entityManager.toDBFormatString("_id"));
     }
 
     @Test
@@ -75,5 +76,31 @@ public class EntityManagerTest {
         Assert.assertNotNull(transfer.getFrom().getName());
         Assert.assertFalse(transfer.getFrom().isStab());
         Assert.assertNull(transfer.getTo());
+        Assert.assertNull(transfer.getOperator());
+    }
+
+    @Test
+    public void deleteTest() throws Exception {
+        User user = new User();
+        user.setName("name");
+        entityManager.save(user);
+        Assert.assertNotNull(user.getId());
+        entityManager.delete(user);
+        user = entityManager.findById(user.getId(), User.class);
+        Assert.assertNull(user);
+    }
+
+    @Test
+    public void referenceTest() throws Exception {
+        User user = new User();
+        user.setName("name");
+        entityManager.save(user);
+        Assert.assertNotNull(user.getId());
+
+        TransgranTransfer transfer = new TransgranTransfer();
+        transfer.setOperator(user.getId());
+        entityManager.save(transfer);
+        transfer = entityManager.findById(transfer.getId(), TransgranTransfer.class);
+        Assert.assertEquals(user.getId(), transfer.getOperator());
     }
 }

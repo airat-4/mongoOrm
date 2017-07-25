@@ -7,10 +7,8 @@ import com.mongodb.DBCursor;
 import com.mongodb.DBObject;
 import org.bson.types.ObjectId;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -23,9 +21,7 @@ import java.util.Set;
  */
 public class EntityManager {
 
-    private static final Map<Class<? extends DTO>, Map<String, String>> GETTER_TO_DB_STRING = new HashMap<>();
-    private static final Map<Class<? extends DTO>, Map<String, String>> SETTER_TO_DB = new HashMap<>();
-    private static final Map<Class<? extends DTO>, Map<String, Class<? extends DTO>>> SETTER_TO_DTO = new HashMap<>();
+    private static final Map<Class<? extends DTO>, Map<String, FieldMapper>> FIELD_MAPPER = new HashMap<>();
     private static final String MONGO_ID = "_id";
     private static final Config DEFAULT_CONFIG = new Config();
     private static final Config EAGER_CONFIG = new Config(false);
@@ -40,116 +36,95 @@ public class EntityManager {
         if (dto.isStab()) {
             return;
         }
-        Map<String, String> getterToDBString = getGetterToDBString(dto.getClass());
-        for (DTO curDto : getAllInnerDto(dto, getterToDBString)) {
+        Map<String, FieldMapper> fieldMapper = getFieldMapper(dto.getClass());
+        for (DTO curDto : getNotNullInnerDto(dto, fieldMapper)) {
             save(curDto);
         }
         if (dto.getId() == null) {
-            create(dto, getterToDBString);
+            create(dto, fieldMapper);
         } else {
-            update(dto, getterToDBString);
+            update(dto, fieldMapper);
         }
     }
 
-    private void update(DTO dto, Map<String, String> getterToDBString) {
-        BasicDBObject basicDBObject = toBasicDBObject(dto, getterToDBString);
+    private void update(DTO dto, Map<String, FieldMapper> fieldMapper) {
+        BasicDBObject basicDBObject = toBasicDBObject(dto, fieldMapper);
         getCollection(dto.getClass()).update(new BasicDBObject(MONGO_ID, basicDBObject.getObjectId(MONGO_ID)), basicDBObject);
     }
 
-    private List<DTO> getAllInnerDto(DTO dto, Map<String, String> getterToDBString) {
-        List<DTO> innerDto = null;
-        for (Map.Entry<String, String> entry : getterToDBString.entrySet()) {
-            Object value = getValue(dto, entry.getKey());
-            if (value != null && value instanceof DTO && !((DTO) value).isStab()) {
-                if (innerDto == null) {
-                    innerDto = new ArrayList<>();
+    private List<DTO> getNotNullInnerDto(DTO dto, Map<String, FieldMapper> fieldMapper) {
+        List<DTO> innerDto = new ArrayList<>();
+        for (FieldMapper mapper : fieldMapper.values()) {
+            if (mapper.isDTO()) {
+                Object value = getFieldValue(dto, mapper.getFieldName());
+                if (value != null) {
+                    innerDto.add((DTO) value);
                 }
-                innerDto.add((DTO) value);
             }
         }
-        return innerDto != null ? innerDto : Collections.emptyList();
+        return innerDto;
     }
 
-    private void create(DTO dto, Map<String, String> getterToDBString) {
-        BasicDBObject basicDBObject = toBasicDBObject(dto, getterToDBString);
+    private void create(DTO dto, Map<String, FieldMapper> fieldMapper) {
+        BasicDBObject basicDBObject = toBasicDBObject(dto, fieldMapper);
         getCollection(dto.getClass()).insert(basicDBObject);
         dto.setId(basicDBObject.getObjectId(MONGO_ID));
     }
 
-    private BasicDBObject toBasicDBObject(DTO dto, Map<String, String> getterToDBString) {
+    private BasicDBObject toBasicDBObject(DTO dto, Map<String, FieldMapper> fieldMapper) {
         BasicDBObject basicDBObject = new BasicDBObject();
-        for (Map.Entry<String, String> entry : getterToDBString.entrySet()) {
-            Object value = getValue(dto, entry.getKey());
+        for (FieldMapper mapper : fieldMapper.values()) {
+            Object value = getFieldValue(dto, mapper.getFieldName());
             if (value != null) {
-                if (value instanceof DTO) {
-                    basicDBObject.append(entry.getValue(), ((DTO) value).getId());
+                if (mapper.isDTO()) {
+                    basicDBObject.append(mapper.getDbName(), ((DTO) value).getId());
                 } else {
-                    basicDBObject.append(entry.getValue(), value);
+                    basicDBObject.append(mapper.getDbName(), value);
                 }
             }
         }
         return basicDBObject;
     }
 
-    private Object getValue(DTO dto, String getterName) {
-        Class<? extends DTO> clazz = dto.getClass();
+    private Object getFieldValue(DTO dto, String fieldName) {
         try {
-            Method method = clazz.getMethod(getterName);
-            return method.invoke(dto);
-        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
+            Field field = getField(dto.getClass(), fieldName);
+            return field.get(dto);
+        } catch (NoSuchFieldException | IllegalAccessException e) {
             e.printStackTrace();
         }
         return null;
     }
 
-    private Map<String, String> getGetterToDBString(Class<? extends DTO> clazz) {
-        Map<String, String> dtoToCollectionMap = GETTER_TO_DB_STRING.get(clazz);
-        if (dtoToCollectionMap == null) {
-            dtoToCollectionMap = new HashMap<>();
-            Method[] methods = clazz.getMethods();
-            for (Method method : methods) {
-                if (method.getName().startsWith("get") && !method.isAnnotationPresent(NoPersist.class) && !method.getName().equals("getClass")) {
-                    dtoToCollectionMap.put(method.getName(), toDBFormatString(method.getName().substring(3)));
-                }
-                if (method.getName().startsWith("is") && !method.isAnnotationPresent(NoPersist.class)) {
-                    dtoToCollectionMap.put(method.getName(), toDBFormatString(method.getName().substring(2)));
-                }
-            }
-            GETTER_TO_DB_STRING.put(clazz, dtoToCollectionMap);
-        }
-        return dtoToCollectionMap;
+    private Field getField(Class<? extends DTO> clazz, String fieldName) throws NoSuchFieldException {
+        clazz = MONGO_ID.equals(fieldName) ? (Class<DTO>) clazz.getSuperclass() : clazz;
+        Field field = clazz.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return field;
     }
 
-    private Map<String, String> getSetterToDB(Class<? extends DTO> clazz) {
-        Map<String, String> dtoToCollectionMap = SETTER_TO_DB.get(clazz);
-        if (dtoToCollectionMap == null) {
-            dtoToCollectionMap = new HashMap<>();
-            Method[] methods = clazz.getMethods();
-            for (Method method : methods) {
-                if (method.getName().startsWith("set") && !method.isAnnotationPresent(NoPersist.class)) {
-                    dtoToCollectionMap.put(method.getName(), toDBFormatString(method.getName().substring(3)));
+    private Map<String, FieldMapper> getFieldMapper(Class<? extends DTO> clazz) {
+        Map<String, FieldMapper> fieldMap = FIELD_MAPPER.get(clazz);
+        if (fieldMap == null) {
+            fieldMap = new HashMap<>();
+            Field[] fields = clazz.getDeclaredFields();
+            for (Field field : fields) {
+                if (!field.isAnnotationPresent(NoPersist.class)) {
+                    FieldMapper mapping = new FieldMapper();
+                    mapping.setDb(toDBFormatString(field.getName()));
+                    mapping.setField(field.getName());
+                    mapping.setDTO(DTO.class.isAssignableFrom(field.getType()));
+                    mapping.setReference(ObjectId.class.isAssignableFrom(field.getType()));
+                    fieldMap.put(field.getName(), mapping);
                 }
             }
-            SETTER_TO_DB.put(clazz, dtoToCollectionMap);
+            FieldMapper mapping = new FieldMapper();
+            mapping.setDb(MONGO_ID);
+            mapping.setField(MONGO_ID);
+            fieldMap.put(MONGO_ID, mapping);
+            FIELD_MAPPER.put(clazz, fieldMap);
         }
-        return dtoToCollectionMap;
-    }
-
-    private Map<String, Class<? extends DTO>> getSetterToDto(Class<? extends DTO> clazz) {
-        Map<String, Class<? extends DTO>> dtoToCollectionMap = SETTER_TO_DTO.get(clazz);
-        if (dtoToCollectionMap == null) {
-            dtoToCollectionMap = new HashMap<>();
-            Method[] methods = clazz.getMethods();
-            for (Method method : methods) {
-                if (method.getName().startsWith("get")
-                        && !method.getName().equals("getClass")
-                        && DTO.class.isAssignableFrom(method.getReturnType())) {
-                    dtoToCollectionMap.put("set" + method.getName().substring(3), (Class<? extends DTO>) method.getReturnType());
-                }
-            }
-            SETTER_TO_DTO.put(clazz, dtoToCollectionMap);
-        }
-        return dtoToCollectionMap;
+        return fieldMap;
     }
 
     private DBCollection getCollection(Class<? extends DTO> clazz) {
@@ -209,7 +184,7 @@ public class EntityManager {
     }
 
     public <T extends DTO> T findOne(T dto, Config config) {
-        BasicDBObject query = toBasicDBObject(dto, getGetterToDBString(dto.getClass()));
+        BasicDBObject query = toBasicDBObject(dto, getFieldMapper(dto.getClass()));
         return findOne(query, (Class<T>) dto.getClass(), config);
     }
 
@@ -218,7 +193,7 @@ public class EntityManager {
     }
 
     public <T extends DTO> List<T> find(T dto, Config config) {
-        BasicDBObject query = toBasicDBObject(dto, getGetterToDBString(dto.getClass()));
+        BasicDBObject query = toBasicDBObject(dto, getFieldMapper(dto.getClass()));
         return find(query, (Class<T>) dto.getClass(), config);
     }
 
@@ -257,79 +232,87 @@ public class EntityManager {
         }
 
         List<T> answer = new ArrayList<>();
-        Map<String, String> setterToDB = getSetterToDB(clazz);
-        Map<String, Class<? extends DTO>> setterToDto = getSetterToDto(clazz);
+        Map<String, FieldMapper> fieldMapper = getFieldMapper(clazz);
         for (DBObject dbObject : cursor) {
-            T dto = toDto(dbObject, clazz, setterToDB, setterToDto);
+            T dto = toDto(dbObject, clazz, fieldMapper);
             answer.add(dto);
         }
         if (!config.isLazy()) {
-            for (Map.Entry<String, Class<? extends DTO>> entry : setterToDto.entrySet()) {
-                resolveDependency(answer, entry.getKey(), entry.getValue());
+            for (FieldMapper mapper : fieldMapper.values()) {
+                if(mapper.isDTO()) {
+                    resolveDependency(answer, mapper.getFieldName());
+                }
             }
         }
         return answer;
     }
 
-    private <T extends DTO> void resolveDependency(List<T> answer, String setterName, Class<? extends DTO> joinDtoClass) {
+    private <T extends DTO> void resolveDependency(List<T> answer, String fieldName) {
         if (answer.isEmpty()) {
             return;
         }
         try {
-            String getterName = "get" + setterName.substring(3);
-            Method getter = answer.get(0).getClass().getMethod(getterName);
-            Method setter = answer.get(0).getClass().getMethod(setterName, joinDtoClass);
+            Field field = getField(answer.get(0).getClass(), fieldName);
+            field.setAccessible(true);
             Set<ObjectId> objectIds = new HashSet<>();
             for (T dto : answer) {
-                DTO invoke = (DTO) getter.invoke(dto);
-                if(invoke != null && invoke.getId() != null) {
-                    objectIds.add(invoke.getId());
+                DTO joinedDto = (DTO) field.get(dto);
+                if (joinedDto != null && joinedDto.getId() != null) {
+                    objectIds.add(joinedDto.getId());
                 }
             }
-            List<? extends DTO> dependence = find(new BasicDBObject(MONGO_ID, new BasicDBObject("$in", objectIds)), joinDtoClass, EAGER_CONFIG);
+            List<? extends DTO> dependence = find(new BasicDBObject(MONGO_ID, new BasicDBObject("$in", objectIds)), (Class<? extends DTO>) field.getType(), EAGER_CONFIG);
             Map<ObjectId, DTO> dependenceMap = new HashMap<>();
             for (DTO dto : dependence) {
                 dependenceMap.put(dto.getId(), dto);
             }
             for (T dto : answer) {
-                DTO invoke = (DTO) getter.invoke(dto);
-                if(invoke != null && invoke.getId() != null) {
-                    DTO joinDto = dependenceMap.get(invoke.getId());
+                DTO stabDto = (DTO) field.get(dto);
+                if (stabDto != null && stabDto.getId() != null) {
+                    DTO joinDto = dependenceMap.get(stabDto.getId());
                     if (joinDto != null) {
-                        setter.invoke(dto, joinDto);
+                        field.set(dto, joinDto);
                     }
                 }
             }
-        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
+        } catch (NoSuchFieldException | IllegalAccessException e) {
             e.printStackTrace();
         }
-
     }
 
-    private <T extends DTO> T toDto(DBObject dbObject, Class<T> clazz, Map<String, String> setterToDB, Map<String, Class<? extends DTO>> setterToDto) {
+    private <T extends DTO> T toDto(DBObject dbObject, Class<T> clazz, Map<String, FieldMapper> fieldMapper) {
         try {
             T dto = clazz.newInstance();
-            for (Method method : clazz.getMethods()) {
-                String dbString = setterToDB.get(method.getName());
-                if (dbString != null) {
-                    Object object = dbObject.get(dbString);
-                    if (object != null) {
-                        Class<? extends DTO> dtoClass = setterToDto.get(method.getName());
-                        if (object instanceof ObjectId && dtoClass != null) {
-                            DTO joinDto = dtoClass.newInstance();
-                            joinDto.setId((ObjectId) object);
-                            joinDto.setStab(true);
-                            object = joinDto;
-                        }
-                        method.invoke(dto, object);
+            for (FieldMapper mapper : fieldMapper.values()) {
+                Object object = dbObject.get(mapper.getDbName());
+                if (object != null) {
+                    Field field = getField(clazz, mapper.getFieldName());
+                    field.setAccessible(true);
+                    if (object instanceof ObjectId && mapper.isDTO()) {
+                        DTO joinDto = (DTO) field.getType().newInstance();
+                        joinDto.setId((ObjectId) object);
+                        joinDto.setStab(true);
+                        object = joinDto;
                     }
+                    field.set(dto, object);
                 }
             }
             return dto;
-        } catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
+        } catch (NoSuchFieldException | InstantiationException | IllegalAccessException e) {
             e.printStackTrace();
         }
         return null;
     }
 
+    public void delete(String id, Class<? extends DTO> clazz) {
+        delete(new ObjectId(id), clazz);
+    }
+
+    public void delete(DTO dto) {
+        getCollection(dto.getClass()).remove(new BasicDBObject(MONGO_ID, dto.getId()));
+    }
+
+    public void delete(ObjectId id, Class<? extends DTO> clazz) {
+        getCollection(clazz).remove(new BasicDBObject(MONGO_ID, id));
+    }
 }
