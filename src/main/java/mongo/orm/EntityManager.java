@@ -1,12 +1,21 @@
 package mongo.orm;
 
-import com.mongodb.*;
-import com.mongodb.client.model.DBCollectionFindOptions;
+import com.mongodb.BasicDBObject;
+import com.mongodb.DB;
+import com.mongodb.DBCollection;
+import com.mongodb.DBCursor;
+import com.mongodb.DBObject;
 import org.bson.types.ObjectId;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * @author Айрат Гареев
@@ -20,7 +29,6 @@ public class EntityManager {
     private static final String MONGO_ID = "_id";
     private static final Config DEFAULT_CONFIG = new Config();
     private static final Config EAGER_CONFIG = new Config(false);
-
 
     private DB db;
 
@@ -150,7 +158,7 @@ public class EntityManager {
         return db.getCollection(name);
     }
 
-    private String toDBFormatString(String camelCaseString) {
+    String toDBFormatString(String camelCaseString) {
         boolean prevIsLowerCase = false;
         boolean prevIsDigit = false;
         StringBuilder DBFormatString = new StringBuilder();
@@ -219,6 +227,7 @@ public class EntityManager {
     }
 
     public <T extends DTO> T findOne(BasicDBObject query, Class<T> clazz, Config config) {
+        config = new Config(config.getSkip(), 1, config.isLazy(), config.getSort());
         List<T> result = find(query, clazz, config);
         return result.isEmpty() ? null : result.get(0);
     }
@@ -236,17 +245,17 @@ public class EntityManager {
     }
 
     public <T extends DTO> List<T> find(BasicDBObject query, Class<T> clazz, Config config) {
-        DBCollectionFindOptions options = new DBCollectionFindOptions();
+        DBCursor cursor = getCollection(clazz).find(query);
         if (config.getSkip() > 0) {
-            options.skip(config.getSkip());
+            cursor.skip(config.getSkip());
         }
         if (config.getLimit() > 0) {
-            options.limit(config.getLimit());
+            cursor.limit(config.getLimit());
         }
         if (config.getSort() != null) {
-            options.sort(config.getSort());
+            cursor.sort(config.getSort());
         }
-        DBCursor cursor = getCollection(clazz).find(query, options);
+
         List<T> answer = new ArrayList<>();
         Map<String, String> setterToDB = getSetterToDB(clazz);
         Map<String, Class<? extends DTO>> setterToDto = getSetterToDto(clazz);
@@ -273,7 +282,9 @@ public class EntityManager {
             Set<ObjectId> objectIds = new HashSet<>();
             for (T dto : answer) {
                 DTO invoke = (DTO) getter.invoke(dto);
-                objectIds.add(invoke.getId());
+                if(invoke != null && invoke.getId() != null) {
+                    objectIds.add(invoke.getId());
+                }
             }
             List<? extends DTO> dependence = find(new BasicDBObject(MONGO_ID, new BasicDBObject("$in", objectIds)), joinDtoClass, EAGER_CONFIG);
             Map<ObjectId, DTO> dependenceMap = new HashMap<>();
@@ -282,8 +293,12 @@ public class EntityManager {
             }
             for (T dto : answer) {
                 DTO invoke = (DTO) getter.invoke(dto);
-                DTO joinDto = dependenceMap.get(invoke.getId());
-                setter.invoke(dto, joinDto);
+                if(invoke != null && invoke.getId() != null) {
+                    DTO joinDto = dependenceMap.get(invoke.getId());
+                    if (joinDto != null) {
+                        setter.invoke(dto, joinDto);
+                    }
+                }
             }
         } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
             e.printStackTrace();
